@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terraform Drift Corrector</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Terraform Drift Corrector</h1>
+        <p id="subtitle">Review Azure changes made outside Terraform and choose a correction path.</p>
+      </div>
+      <div class="header-actions">
+        <button id="refreshStatus" type="button" class="button secondary">Check connection</button>
+        <button id="scan" type="button" class="button primary">Scan drift</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="status-grid" aria-label="Connection status">
+        <article class="stat">
+          <span>Mode</span>
+          <strong id="mode">loading</strong>
+          <small id="workdir">Terraform workdir not loaded</small>
+        </article>
+        <article class="stat">
+          <span>Terraform</span>
+          <strong id="terraformStatus">checking</strong>
+          <small id="terraformDetail">Waiting for status</small>
+        </article>
+        <article class="stat">
+          <span>Azure</span>
+          <strong id="azureStatus">checking</strong>
+          <small id="azureDetail">Waiting for status</small>
+        </article>
+        <article class="stat">
+          <span>Drifted resources</span>
+          <strong id="driftCount">0</strong>
+          <small id="scanTime">No scan yet</small>
+        </article>
+      </section>
+
+      <section class="toolbar" aria-label="Resource filters">
+        <label>
+          Search
+          <input id="search" type="search" placeholder="resource, type, address">
+        </label>
+        <label>
+          Category
+          <select id="category">
+            <option value="all">All</option>
+            <option value="security">Security</option>
+            <option value="cost">Cost</option>
+            <option value="tagging">Tagging</option>
+            <option value="general">General</option>
+          </select>
+        </label>
+        <label>
+          Correction
+          <select id="action">
+            <option value="restore">Restore Azure</option>
+            <option value="accept">Accept into Terraform</option>
+            <option value="suppress">Suppress</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="content">
+        <aside class="resource-panel" aria-label="Drifted resources">
+          <div class="panel-heading">
+            <h2>Resources</h2>
+            <span id="visibleCount">0 shown</span>
+          </div>
+          <div id="resources" class="resource-list"></div>
+        </aside>
+
+        <section class="detail-panel" aria-label="Resource details">
+          <div class="empty-state" id="emptyState">
+            <h2>No resource selected</h2>
+            <p>Run a scan, then select a drifted resource to review differences and correction steps.</p>
+          </div>
+
+          <div id="detail" class="detail hidden">
+            <div class="detail-heading">
+              <div>
+                <h2 id="resourceName">Resource</h2>
+                <code id="resourceAddress"></code>
+              </div>
+              <span id="severity" class="badge">risk</span>
+            </div>
+
+            <div class="mini-grid">
+              <div>
+                <span>Owner</span>
+                <strong id="owner">unassigned</strong>
+              </div>
+              <div>
+                <span>Detected by</span>
+                <strong id="detectedBy">unknown</strong>
+              </div>
+              <div>
+                <span>Recommendation</span>
+                <strong id="recommendation">restore</strong>
+              </div>
+            </div>
+
+            <div class="section-title">
+              <h3>Attribute drift</h3>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Attribute</th>
+                    <th>Terraform recorded</th>
+                    <th>Azure current</th>
+                  </tr>
+                </thead>
+                <tbody id="diffRows"></tbody>
+              </table>
+            </div>
+
+            <div class="split">
+              <section>
+                <div class="section-title">
+                  <h3>Correction plan</h3>
+                  <button id="generatePlan" type="button" class="button secondary">Generate</button>
+                </div>
+                <p id="planSummary" class="muted">Choose an action and generate a correction plan.</p>
+                <pre><code id="planCommands"></code></pre>
+              </section>
+
+              <section>
+                <div class="section-title">
+                  <h3>Azure activity</h3>
+                  <button id="loadActivity" type="button" class="button secondary">Load events</button>
+                </div>
+                <div id="activity" class="activity-list">
+                  <p class="muted">Load Activity Log events for attribution.</p>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
