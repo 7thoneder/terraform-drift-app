@@ -29,6 +29,16 @@ Important settings:
 - `AZURE_SUBSCRIPTION_ID=<subscription-id>`
 - `TERRAFORM_WORKSPACE=<workspace-name>` if you use workspaces
 
+You can also set the subscription from the app:
+
+1. Start the app.
+2. Click `Log into Azure`.
+3. Complete the Azure CLI browser sign-in.
+4. Click `Refresh subscriptions`.
+5. Choose a subscription and click `Use subscription`.
+
+The app saves the selected subscription to `.env`, runs `az account set --subscription <id>`, and passes the selected ID to Terraform as `ARM_SUBSCRIPTION_ID`.
+
 ## Run
 
 ```powershell

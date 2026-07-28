@@ -13,6 +13,7 @@
         <p id="subtitle">Review Azure changes made outside Terraform and choose a correction path.</p>
       </div>
       <div class="header-actions">
+        <button id="loginAzure" type="button" class="button secondary">Log into Azure</button>
         <button id="refreshStatus" type="button" class="button secondary">Check connection</button>
         <button id="scan" type="button" class="button primary">Scan drift</button>
       </div>
@@ -40,6 +41,23 @@
           <strong id="driftCount">0</strong>
           <small id="scanTime">No scan yet</small>
         </article>
+      </section>
+
+      <section class="connection-panel" aria-label="Azure subscription selection">
+        <div>
+          <h2>Azure connection</h2>
+          <p id="azureConnectionMessage">Log in with Azure CLI, then choose the subscription this workspace should use.</p>
+        </div>
+        <div class="subscription-controls">
+          <label>
+            Subscription
+            <select id="subscriptionSelect">
+              <option value="">No subscriptions loaded</option>
+            </select>
+          </label>
+          <button id="loadSubscriptions" type="button" class="button secondary">Refresh subscriptions</button>
+          <button id="selectSubscription" type="button" class="button primary">Use subscription</button>
+        </div>
       </section>
 
       <section class="toolbar" aria-label="Resource filters">

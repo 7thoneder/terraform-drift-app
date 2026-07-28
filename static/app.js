@@ -11,6 +11,8 @@ const nodes = {
   terraformDetail: document.getElementById("terraformDetail"),
   azureStatus: document.getElementById("azureStatus"),
   azureDetail: document.getElementById("azureDetail"),
+  azureConnectionMessage: document.getElementById("azureConnectionMessage"),
+  subscriptionSelect: document.getElementById("subscriptionSelect"),
   driftCount: document.getElementById("driftCount"),
   scanTime: document.getElementById("scanTime"),
   resources: document.getElementById("resources"),
@@ -67,9 +69,15 @@ function renderStatus() {
   nodes.azureStatus.textContent = status.azure?.ok ? "connected" : "not connected";
   if (status.azure?.ok) {
     const account = status.azure.account;
-    nodes.azureDetail.textContent = `${account.name || "subscription"} (${account.subscriptionId || "unknown"})`;
+    const configured = status.azure.configuredSubscriptionId;
+    const configuredText = configured && configured !== account.subscriptionId ? `; configured ${configured}` : "";
+    nodes.azureDetail.textContent = `${account.name || "subscription"} (${account.subscriptionId || "unknown"})${configuredText}`;
+    nodes.azureConnectionMessage.textContent = configured
+      ? `Using subscription ${configured}. Azure CLI active subscription is ${account.subscriptionId || "unknown"}.`
+      : "Azure CLI is logged in. Choose a subscription to save it for this app.";
   } else {
     nodes.azureDetail.textContent = status.azure?.message || "Azure CLI unavailable";
+    nodes.azureConnectionMessage.textContent = "Not logged into Azure yet. Start login, complete the browser sign-in, then refresh subscriptions.";
   }
 }
 
@@ -163,6 +171,84 @@ async function loadStatus() {
   render();
 }
 
+async function loginAzure() {
+  const button = document.getElementById("loginAzure");
+  button.textContent = "Starting login...";
+  nodes.azureConnectionMessage.textContent = "Starting Azure login in your browser...";
+  try {
+    const result = await api("/api/azure/login", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    nodes.azureConnectionMessage.textContent = result.ok ? result.message : result.error || "Azure login could not be started.";
+  } catch (error) {
+    nodes.azureConnectionMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Log into Azure";
+  }
+}
+
+async function loadSubscriptions() {
+  const button = document.getElementById("loadSubscriptions");
+  button.textContent = "Loading...";
+  nodes.subscriptionSelect.innerHTML = '<option value="">Loading subscriptions...</option>';
+  try {
+    const result = await api("/api/azure/subscriptions");
+    if (!result.ok) {
+      nodes.subscriptionSelect.innerHTML = '<option value="">Could not load subscriptions</option>';
+      nodes.azureConnectionMessage.textContent = result.error || "Could not load subscriptions.";
+      return;
+    }
+    if (!result.subscriptions.length) {
+      nodes.subscriptionSelect.innerHTML = '<option value="">No subscriptions found</option>';
+      nodes.azureConnectionMessage.textContent = "No subscriptions were returned by Azure CLI for this account.";
+      return;
+    }
+    nodes.subscriptionSelect.innerHTML = "";
+    result.subscriptions.forEach((subscription) => {
+      const option = document.createElement("option");
+      option.value = subscription.id;
+      const markers = [
+        subscription.isDefault ? "active" : "",
+        subscription.isConfigured ? "saved" : "",
+        subscription.state && subscription.state !== "Enabled" ? subscription.state : "",
+      ].filter(Boolean);
+      option.textContent = `${subscription.name || "Unnamed subscription"} (${subscription.id})${markers.length ? ` - ${markers.join(", ")}` : ""}`;
+      option.selected = subscription.isConfigured || (!result.configuredSubscriptionId && subscription.isDefault);
+      nodes.subscriptionSelect.appendChild(option);
+    });
+    nodes.azureConnectionMessage.textContent = "Choose a subscription and save it for Terraform scans and Azure Activity Log queries.";
+  } catch (error) {
+    nodes.subscriptionSelect.innerHTML = '<option value="">Could not load subscriptions</option>';
+    nodes.azureConnectionMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Refresh subscriptions";
+  }
+}
+
+async function selectSubscription() {
+  const subscriptionId = nodes.subscriptionSelect.value;
+  if (!subscriptionId) {
+    nodes.azureConnectionMessage.textContent = "Select a subscription first.";
+    return;
+  }
+  const button = document.getElementById("selectSubscription");
+  button.textContent = "Saving...";
+  try {
+    const result = await api("/api/azure/subscription", {
+      method: "POST",
+      body: JSON.stringify({ subscriptionId }),
+    });
+    nodes.azureConnectionMessage.textContent = result.ok ? result.message : result.error || "Could not select subscription.";
+    await loadStatus();
+    await loadSubscriptions();
+  } catch (error) {
+    nodes.azureConnectionMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Use subscription";
+  }
+}
+
 async function scan() {
   document.getElementById("scan").textContent = "Scanning...";
   try {
@@ -220,6 +306,9 @@ async function loadActivity() {
 }
 
 document.getElementById("refreshStatus").addEventListener("click", loadStatus);
+document.getElementById("loginAzure").addEventListener("click", loginAzure);
+document.getElementById("loadSubscriptions").addEventListener("click", loadSubscriptions);
+document.getElementById("selectSubscription").addEventListener("click", selectSubscription);
 document.getElementById("scan").addEventListener("click", scan);
 document.getElementById("generatePlan").addEventListener("click", generatePlan);
 document.getElementById("loadActivity").addEventListener("click", loadActivity);
@@ -227,4 +316,7 @@ nodes.search.addEventListener("input", render);
 nodes.category.addEventListener("change", render);
 nodes.action.addEventListener("change", generatePlan);
 
-loadStatus().then(scan);
+loadStatus().then(() => {
+  loadSubscriptions();
+  scan();
+});

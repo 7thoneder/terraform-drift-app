@@ -33,15 +33,46 @@ def load_env() -> dict[str, str]:
 CONFIG = load_env()
 
 
+def app_env() -> dict[str, str]:
+    env = dict(os.environ)
+    subscription_id = CONFIG.get("AZURE_SUBSCRIPTION_ID", "")
+    if subscription_id:
+        env["AZURE_SUBSCRIPTION_ID"] = subscription_id
+        env["ARM_SUBSCRIPTION_ID"] = subscription_id
+    return env
+
+
+def save_env_value(key: str, value: str) -> None:
+    env_file = ROOT / ".env"
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    updated = False
+    output = []
+    for line in lines:
+        if line.strip().startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+        existing_key, _ = line.split("=", 1)
+        if existing_key.strip() == key:
+            output.append(f"{key}={value}")
+            updated = True
+        else:
+            output.append(line)
+    if not updated:
+        output.append(f"{key}={value}")
+    env_file.write_text("\n".join(output) + "\n", encoding="utf-8")
+    CONFIG[key] = value
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
-def run_command(args: list[str], cwd: str | None = None, timeout: int = 180) -> dict[str, Any]:
+def run_command(args: list[str], cwd: str | None = None, timeout: int = 180, env: dict[str, str] | None = None) -> dict[str, Any]:
     try:
         proc = subprocess.run(
             args,
             cwd=cwd,
+            env=env,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -209,22 +240,22 @@ def scan_live() -> dict[str, Any]:
     if not workdir or not pathlib.Path(workdir).exists():
         return {"ok": False, "error": "TERRAFORM_WORKDIR is not set or does not exist.", "resources": []}
 
-    init = run_command(["terraform", "init", "-input=false"], cwd=workdir, timeout=300)
+    init = run_command(["terraform", "init", "-input=false"], cwd=workdir, timeout=300, env=app_env())
     if not init["ok"]:
         return {"ok": False, "error": "terraform init failed", "details": init, "resources": []}
 
     workspace = CONFIG.get("TERRAFORM_WORKSPACE", "")
     if workspace:
-        selected = run_command(["terraform", "workspace", "select", workspace], cwd=workdir)
+        selected = run_command(["terraform", "workspace", "select", workspace], cwd=workdir, env=app_env())
         if not selected["ok"]:
             return {"ok": False, "error": "terraform workspace select failed", "details": selected, "resources": []}
 
     with tempfile.TemporaryDirectory() as tmp:
         plan_path = str(pathlib.Path(tmp) / "drift.tfplan")
-        plan = run_command(["terraform", "plan", "-refresh-only", "-out", plan_path], cwd=workdir, timeout=600)
+        plan = run_command(["terraform", "plan", "-refresh-only", "-out", plan_path], cwd=workdir, timeout=600, env=app_env())
         if not plan["ok"] and plan["returncode"] not in (0, 2):
             return {"ok": False, "error": "terraform plan -refresh-only failed", "details": plan, "resources": []}
-        shown = run_command(["terraform", "show", "-json", plan_path], cwd=workdir, timeout=180)
+        shown = run_command(["terraform", "show", "-json", plan_path], cwd=workdir, timeout=180, env=app_env())
         if not shown["ok"]:
             return {"ok": False, "error": "terraform show -json failed", "details": shown, "resources": []}
         try:
@@ -255,7 +286,69 @@ def azure_status() -> dict[str, Any]:
         account = json.loads(az["stdout"])
     except json.JSONDecodeError:
         return {"ok": False, "message": "Azure CLI returned unreadable account JSON."}
-    return {"ok": True, "account": {"name": account.get("name"), "tenantId": account.get("tenantId"), "subscriptionId": account.get("id")}}
+    return {
+        "ok": True,
+        "account": {"name": account.get("name"), "tenantId": account.get("tenantId"), "subscriptionId": account.get("id")},
+        "configuredSubscriptionId": CONFIG.get("AZURE_SUBSCRIPTION_ID", ""),
+    }
+
+
+def start_azure_login() -> dict[str, Any]:
+    try:
+        popen_kwargs: dict[str, Any] = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(
+            ["az", "login"],
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **popen_kwargs,
+        )
+        return {
+            "ok": True,
+            "pid": proc.pid,
+            "message": "Azure login started. Complete the browser sign-in, then refresh subscriptions.",
+        }
+    except FileNotFoundError:
+        return {"ok": False, "error": "Azure CLI was not found on PATH."}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def azure_subscriptions() -> dict[str, Any]:
+    result = run_command(["az", "account", "list", "--all", "--output", "json"], timeout=60)
+    if not result["ok"]:
+        return {"ok": False, "error": result["stderr"] or "Could not list Azure subscriptions.", "subscriptions": []}
+    try:
+        accounts = json.loads(result["stdout"])
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Could not parse Azure subscriptions: {exc}", "subscriptions": []}
+    subscriptions = []
+    configured = CONFIG.get("AZURE_SUBSCRIPTION_ID", "")
+    for account in accounts:
+        subscriptions.append({
+            "id": account.get("id", ""),
+            "name": account.get("name", ""),
+            "tenantId": account.get("tenantId", ""),
+            "state": account.get("state", ""),
+            "isDefault": bool(account.get("isDefault")),
+            "isConfigured": bool(configured and account.get("id") == configured),
+        })
+    return {"ok": True, "configuredSubscriptionId": configured, "subscriptions": subscriptions}
+
+
+def select_subscription(subscription_id: str) -> dict[str, Any]:
+    if not subscription_id:
+        return {"ok": False, "error": "subscriptionId is required."}
+    result = run_command(["az", "account", "set", "--subscription", subscription_id], timeout=60)
+    if not result["ok"]:
+        return {"ok": False, "error": result["stderr"] or "Could not select Azure subscription."}
+    save_env_value("AZURE_SUBSCRIPTION_ID", subscription_id)
+    return {"ok": True, "subscriptionId": subscription_id, "message": "Subscription selected and saved to .env."}
 
 
 def terraform_status() -> dict[str, Any]:
@@ -290,6 +383,9 @@ def activity_for(resource_id: str) -> dict[str, Any]:
         "--start-time", start,
         "--output", "json",
     ]
+    subscription_id = CONFIG.get("AZURE_SUBSCRIPTION_ID", "")
+    if subscription_id:
+        args.extend(["--subscription", subscription_id])
     result = run_command(args, timeout=90)
     if not result["ok"]:
         return {"ok": False, "error": result["stderr"], "events": []}
@@ -373,6 +469,9 @@ class Handler(BaseHTTPRequestHandler):
                 "terraformWorkdir": CONFIG.get("TERRAFORM_WORKDIR", ""),
             })
             return
+        if path == "/api/azure/subscriptions":
+            self.send_json(azure_subscriptions())
+            return
         if path == "/api/scan":
             self.send_json(scan())
             return
@@ -409,6 +508,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/actions/plan":
             self.send_json(correction_plan(payload))
             return
+        if parsed.path == "/api/azure/login":
+            self.send_json(start_azure_login())
+            return
+        if parsed.path == "/api/azure/subscription":
+            self.send_json(select_subscription(payload.get("subscriptionId", "")))
+            return
         self.send_error(404)
 
 
@@ -423,4 +528,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -135,7 +135,8 @@ select {
 .stat,
 .resource-panel,
 .detail-panel,
-.toolbar {
+.toolbar,
+.connection-panel {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -164,6 +165,25 @@ select {
   gap: 0.75rem;
   grid-template-columns: 1.4fr 0.8fr 1fr;
   padding: 0.85rem;
+}
+
+.connection-panel {
+  align-items: end;
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: minmax(16rem, 0.85fr) minmax(18rem, 1.15fr);
+  padding: 0.85rem;
+}
+
+.connection-panel p {
+  margin-top: 0.35rem;
+}
+
+.subscription-controls {
+  align-items: end;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
 }
 
 label {
@@ -355,6 +375,8 @@ pre {
 
   .status-grid,
   .toolbar,
+  .connection-panel,
+  .subscription-controls,
   .mini-grid {
     grid-template-columns: 1fr;
   }
@@ -363,4 +385,3 @@ pre {
     flex: 1;
   }
 }
-
