@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,40 @@ def load_env() -> dict[str, str]:
 
 
 CONFIG = load_env()
+
+
+def resolve_executable(name: str, config_key: str, common_paths: list[str]) -> str:
+    configured = CONFIG.get(config_key, "")
+    if configured and pathlib.Path(configured).exists():
+        return configured
+    found = shutil.which(name)
+    if found:
+        return found
+    for raw_path in common_paths:
+        expanded = os.path.expandvars(raw_path)
+        if pathlib.Path(expanded).exists():
+            return expanded
+    return name
+
+
+def az_executable() -> str:
+    return resolve_executable(
+        "az",
+        "AZ_CLI_PATH",
+        [
+            r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+            r"C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+            r"%LOCALAPPDATA%\Programs\Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+        ],
+    )
+
+
+def terraform_executable() -> str:
+    return resolve_executable("terraform", "TERRAFORM_CLI_PATH", [])
+
+
+def command_args(executable: str, args: list[str]) -> list[str]:
+    return [executable] + args
 
 
 def app_env() -> dict[str, str]:
@@ -68,9 +103,10 @@ def now_iso() -> str:
 
 
 def run_command(args: list[str], cwd: str | None = None, timeout: int = 180, env: dict[str, str] | None = None) -> dict[str, Any]:
+    command = command_args(args[0], args[1:])
     try:
         proc = subprocess.run(
-            args,
+            command,
             cwd=cwd,
             env=env,
             text=True,
@@ -83,17 +119,17 @@ def run_command(args: list[str], cwd: str | None = None, timeout: int = 180, env
             "returncode": proc.returncode,
             "stdout": proc.stdout,
             "stderr": proc.stderr,
-            "command": args,
+            "command": command,
         }
     except FileNotFoundError:
-        return {"ok": False, "returncode": 127, "stdout": "", "stderr": f"{args[0]} was not found on PATH", "command": args}
+        return {"ok": False, "returncode": 127, "stdout": "", "stderr": f"{args[0]} was not found. Set its path in .env if it is installed.", "command": command}
     except subprocess.TimeoutExpired as exc:
         return {
             "ok": False,
             "returncode": 124,
             "stdout": exc.stdout or "",
             "stderr": f"Command timed out after {timeout}s",
-            "command": args,
+            "command": command,
         }
 
 
@@ -240,22 +276,23 @@ def scan_live() -> dict[str, Any]:
     if not workdir or not pathlib.Path(workdir).exists():
         return {"ok": False, "error": "TERRAFORM_WORKDIR is not set or does not exist.", "resources": []}
 
-    init = run_command(["terraform", "init", "-input=false"], cwd=workdir, timeout=300, env=app_env())
+    terraform = terraform_executable()
+    init = run_command([terraform, "init", "-input=false"], cwd=workdir, timeout=300, env=app_env())
     if not init["ok"]:
         return {"ok": False, "error": "terraform init failed", "details": init, "resources": []}
 
     workspace = CONFIG.get("TERRAFORM_WORKSPACE", "")
     if workspace:
-        selected = run_command(["terraform", "workspace", "select", workspace], cwd=workdir, env=app_env())
+        selected = run_command([terraform, "workspace", "select", workspace], cwd=workdir, env=app_env())
         if not selected["ok"]:
             return {"ok": False, "error": "terraform workspace select failed", "details": selected, "resources": []}
 
     with tempfile.TemporaryDirectory() as tmp:
         plan_path = str(pathlib.Path(tmp) / "drift.tfplan")
-        plan = run_command(["terraform", "plan", "-refresh-only", "-out", plan_path], cwd=workdir, timeout=600, env=app_env())
+        plan = run_command([terraform, "plan", "-refresh-only", "-out", plan_path], cwd=workdir, timeout=600, env=app_env())
         if not plan["ok"] and plan["returncode"] not in (0, 2):
             return {"ok": False, "error": "terraform plan -refresh-only failed", "details": plan, "resources": []}
-        shown = run_command(["terraform", "show", "-json", plan_path], cwd=workdir, timeout=180, env=app_env())
+        shown = run_command([terraform, "show", "-json", plan_path], cwd=workdir, timeout=180, env=app_env())
         if not shown["ok"]:
             return {"ok": False, "error": "terraform show -json failed", "details": shown, "resources": []}
         try:
@@ -279,9 +316,10 @@ def scan() -> dict[str, Any]:
 
 
 def azure_status() -> dict[str, Any]:
-    az = run_command(["az", "account", "show", "--output", "json"], timeout=30)
+    az_path = az_executable()
+    az = run_command([az_path, "account", "show", "--output", "json"], timeout=30)
     if not az["ok"]:
-        return {"ok": False, "message": az["stderr"] or "Azure CLI is not logged in or not installed."}
+        return {"ok": False, "message": azure_error_message(az), "path": az_path}
     try:
         account = json.loads(az["stdout"])
     except json.JSONDecodeError:
@@ -290,6 +328,7 @@ def azure_status() -> dict[str, Any]:
         "ok": True,
         "account": {"name": account.get("name"), "tenantId": account.get("tenantId"), "subscriptionId": account.get("id")},
         "configuredSubscriptionId": CONFIG.get("AZURE_SUBSCRIPTION_ID", ""),
+        "path": az_path,
     }
 
 
@@ -301,7 +340,7 @@ def start_azure_login() -> dict[str, Any]:
         else:
             popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
-            ["az", "login"],
+            command_args(az_executable(), ["login"]),
             cwd=str(ROOT),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -319,10 +358,19 @@ def start_azure_login() -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+def azure_error_message(result: dict[str, Any]) -> str:
+    stderr = result.get("stderr", "")
+    if "PermissionError" in stderr and "azureProfile.json" in stderr:
+        return "Azure CLI was found, but this process cannot read your Azure CLI profile at C:\\Users\\henx_\\.azure\\azureProfile.json. Restart the app from your normal PowerShell session, or run az login there first."
+    if "Please run 'az login'" in stderr or "az login" in stderr:
+        return "Azure CLI was found, but you are not logged in. Click Log into Azure or run az login in PowerShell."
+    return stderr or "Azure CLI is not logged in or not installed."
+
+
 def azure_subscriptions() -> dict[str, Any]:
-    result = run_command(["az", "account", "list", "--all", "--output", "json"], timeout=60)
+    result = run_command([az_executable(), "account", "list", "--all", "--output", "json"], timeout=60)
     if not result["ok"]:
-        return {"ok": False, "error": result["stderr"] or "Could not list Azure subscriptions.", "subscriptions": []}
+        return {"ok": False, "error": azure_error_message(result), "subscriptions": []}
     try:
         accounts = json.loads(result["stdout"])
     except json.JSONDecodeError as exc:
@@ -344,22 +392,23 @@ def azure_subscriptions() -> dict[str, Any]:
 def select_subscription(subscription_id: str) -> dict[str, Any]:
     if not subscription_id:
         return {"ok": False, "error": "subscriptionId is required."}
-    result = run_command(["az", "account", "set", "--subscription", subscription_id], timeout=60)
+    result = run_command([az_executable(), "account", "set", "--subscription", subscription_id], timeout=60)
     if not result["ok"]:
-        return {"ok": False, "error": result["stderr"] or "Could not select Azure subscription."}
+        return {"ok": False, "error": azure_error_message(result)}
     save_env_value("AZURE_SUBSCRIPTION_ID", subscription_id)
     return {"ok": True, "subscriptionId": subscription_id, "message": "Subscription selected and saved to .env."}
 
 
 def terraform_status() -> dict[str, Any]:
-    tf = run_command(["terraform", "version", "-json"], timeout=30)
+    terraform = terraform_executable()
+    tf = run_command([terraform, "version", "-json"], timeout=30)
     if not tf["ok"]:
-        return {"ok": False, "message": tf["stderr"] or "Terraform CLI is not installed."}
+        return {"ok": False, "message": tf["stderr"] or "Terraform CLI is not installed.", "path": terraform}
     try:
         version = json.loads(tf["stdout"]).get("terraform_version")
     except json.JSONDecodeError:
         version = tf["stdout"].splitlines()[0] if tf["stdout"] else "unknown"
-    return {"ok": True, "version": version}
+    return {"ok": True, "version": version, "path": terraform}
 
 
 def activity_for(resource_id: str) -> dict[str, Any]:
@@ -378,7 +427,7 @@ def activity_for(resource_id: str) -> dict[str, Any]:
     days = int(CONFIG.get("AZURE_ACTIVITY_DAYS", "14") or "14")
     start = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
     args = [
-        "az", "monitor", "activity-log", "list",
+        az_executable(), "monitor", "activity-log", "list",
         "--resource-id", resource_id,
         "--start-time", start,
         "--output", "json",
@@ -388,7 +437,7 @@ def activity_for(resource_id: str) -> dict[str, Any]:
         args.extend(["--subscription", subscription_id])
     result = run_command(args, timeout=90)
     if not result["ok"]:
-        return {"ok": False, "error": result["stderr"], "events": []}
+        return {"ok": False, "error": azure_error_message(result), "events": []}
     try:
         raw_events = json.loads(result["stdout"])
     except json.JSONDecodeError as exc:

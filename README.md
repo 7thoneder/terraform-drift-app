@@ -28,6 +28,8 @@ Important settings:
 - `TERRAFORM_WORKDIR=C:\path\to\your\terraform\repo\environment`
 - `AZURE_SUBSCRIPTION_ID=<subscription-id>`
 - `TERRAFORM_WORKSPACE=<workspace-name>` if you use workspaces
+- `AZ_CLI_PATH=C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd` if the app cannot find Azure CLI
+- `TERRAFORM_CLI_PATH=C:\path\to\terraform.exe` if Terraform is not on `PATH`
 
 You can also set the subscription from the app:
 
@@ -38,6 +40,18 @@ You can also set the subscription from the app:
 5. Choose a subscription and click `Use subscription`.
 
 The app saves the selected subscription to `.env`, runs `az account set --subscription <id>`, and passes the selected ID to Terraform as `ARM_SUBSCRIPTION_ID`.
+
+On Windows, Azure CLI is often installed at:
+
+```text
+C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd
+```
+
+The app now checks that path automatically. If your install is somewhere else, set `AZ_CLI_PATH` in `.env`.
+
+If the app previously showed `az was not found on PATH`, stop the running server and start it again with `.\run.ps1` so the patched discovery code is loaded.
+
+If it shows that Azure CLI was found but the profile cannot be read, run the app from your normal PowerShell session rather than from a restricted automation shell, then use `Log into Azure` again.
 
 ## Run
 

@@ -65,7 +65,9 @@ function renderStatus() {
   nodes.mode.textContent = status.mode || "sample";
   nodes.workdir.textContent = status.terraformWorkdir || "No Terraform workdir configured";
   nodes.terraformStatus.textContent = status.terraform?.ok ? "ready" : "not ready";
-  nodes.terraformDetail.textContent = status.terraform?.ok ? `Terraform ${status.terraform.version}` : status.terraform?.message || "Terraform unavailable";
+  nodes.terraformDetail.textContent = status.terraform?.ok
+    ? `Terraform ${status.terraform.version}`
+    : status.terraform?.message || "Terraform unavailable";
   nodes.azureStatus.textContent = status.azure?.ok ? "connected" : "not connected";
   if (status.azure?.ok) {
     const account = status.azure.account;
@@ -76,7 +78,8 @@ function renderStatus() {
       ? `Using subscription ${configured}. Azure CLI active subscription is ${account.subscriptionId || "unknown"}.`
       : "Azure CLI is logged in. Choose a subscription to save it for this app.";
   } else {
-    nodes.azureDetail.textContent = status.azure?.message || "Azure CLI unavailable";
+    const pathHint = status.azure?.path ? ` Found path: ${status.azure.path}` : "";
+    nodes.azureDetail.textContent = `${status.azure?.message || "Azure CLI unavailable"}${pathHint}`;
     nodes.azureConnectionMessage.textContent = "Not logged into Azure yet. Start login, complete the browser sign-in, then refresh subscriptions.";
   }
 }
