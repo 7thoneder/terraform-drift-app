@@ -136,7 +136,8 @@ select {
 .resource-panel,
 .detail-panel,
 .toolbar,
-.connection-panel {
+.connection-panel,
+.state-panel {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -175,7 +176,8 @@ select {
   padding: 0.85rem;
 }
 
-.connection-panel p {
+.connection-panel p,
+.state-panel p {
   margin-top: 0.35rem;
 }
 
@@ -184,6 +186,23 @@ select {
   display: grid;
   gap: 0.65rem;
   grid-template-columns: minmax(12rem, 1fr) auto auto;
+}
+
+.state-panel {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.85rem;
+}
+
+.state-controls {
+  align-items: end;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) minmax(9rem, 0.8fr) minmax(12rem, 1.2fr);
+}
+
+.state-controls .button {
+  min-height: 2.45rem;
 }
 
 label {
@@ -377,6 +396,7 @@ pre {
   .toolbar,
   .connection-panel,
   .subscription-controls,
+  .state-controls,
   .mini-grid {
     grid-template-columns: 1fr;
   }

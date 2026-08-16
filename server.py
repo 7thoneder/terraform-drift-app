@@ -98,6 +98,11 @@ def save_env_value(key: str, value: str) -> None:
     CONFIG[key] = value
 
 
+def save_env_values(values: dict[str, str]) -> None:
+    for key, value in values.items():
+        save_env_value(key, value)
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
@@ -131,6 +136,11 @@ def run_command(args: list[str], cwd: str | None = None, timeout: int = 180, env
             "stderr": f"Command timed out after {timeout}s",
             "command": command,
         }
+
+
+def selected_subscription_args() -> list[str]:
+    subscription_id = CONFIG.get("AZURE_SUBSCRIPTION_ID", "")
+    return ["--subscription", subscription_id] if subscription_id else []
 
 
 def sample_resources() -> list[dict[str, Any]]:
@@ -310,6 +320,9 @@ def scan_live() -> dict[str, Any]:
 
 
 def scan() -> dict[str, Any]:
+    source = CONFIG.get("DRIFT_SOURCE", "terraform").lower()
+    if source == "azure-state":
+        return scan_state_file()
     if CONFIG.get("DRIFT_MODE", "sample").lower() != "live":
         return {"ok": True, "mode": "sample", "scannedAt": now_iso(), "resources": sample_resources()}
     return scan_live()
@@ -397,6 +410,207 @@ def select_subscription(subscription_id: str) -> dict[str, Any]:
         return {"ok": False, "error": azure_error_message(result)}
     save_env_value("AZURE_SUBSCRIPTION_ID", subscription_id)
     return {"ok": True, "subscriptionId": subscription_id, "message": "Subscription selected and saved to .env."}
+
+
+def storage_accounts() -> dict[str, Any]:
+    args = [az_executable(), "storage", "account", "list", "--output", "json"] + selected_subscription_args()
+    result = run_command(args, timeout=90)
+    if not result["ok"]:
+        return {"ok": False, "error": azure_error_message(result), "accounts": []}
+    try:
+        raw_accounts = json.loads(result["stdout"])
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Could not parse storage accounts: {exc}", "accounts": []}
+    accounts = []
+    configured = CONFIG.get("STATE_STORAGE_ACCOUNT", "")
+    for account in raw_accounts:
+        sku = account.get("sku") or {}
+        accounts.append({
+            "name": account.get("name", ""),
+            "resourceGroup": account.get("resourceGroup", ""),
+            "location": account.get("location", ""),
+            "sku": sku.get("name", ""),
+            "isConfigured": bool(configured and account.get("name") == configured),
+        })
+    return {"ok": True, "configuredAccount": configured, "accounts": accounts}
+
+
+def storage_containers(account_name: str) -> dict[str, Any]:
+    if not account_name:
+        return {"ok": False, "error": "accountName is required.", "containers": []}
+    result = run_command([
+        az_executable(), "storage", "container", "list",
+        "--account-name", account_name,
+        "--auth-mode", "login",
+        "--output", "json",
+    ], timeout=90)
+    if not result["ok"]:
+        return {"ok": False, "error": azure_error_message(result), "containers": []}
+    try:
+        raw_containers = json.loads(result["stdout"])
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Could not parse containers: {exc}", "containers": []}
+    configured = CONFIG.get("STATE_CONTAINER", "")
+    containers = [{
+        "name": item.get("name", ""),
+        "lastModified": ((item.get("properties") or {}).get("lastModified") or ""),
+        "isConfigured": bool(configured and item.get("name") == configured),
+    } for item in raw_containers]
+    return {"ok": True, "configuredContainer": configured, "containers": containers}
+
+
+def state_blobs(account_name: str, container_name: str, prefix: str = "") -> dict[str, Any]:
+    if not account_name or not container_name:
+        return {"ok": False, "error": "accountName and containerName are required.", "blobs": []}
+    args = [
+        az_executable(), "storage", "blob", "list",
+        "--account-name", account_name,
+        "--container-name", container_name,
+        "--auth-mode", "login",
+        "--output", "json",
+    ]
+    if prefix:
+        args.extend(["--prefix", prefix])
+    result = run_command(args, timeout=120)
+    if not result["ok"]:
+        return {"ok": False, "error": azure_error_message(result), "blobs": []}
+    try:
+        raw_blobs = json.loads(result["stdout"])
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Could not parse blobs: {exc}", "blobs": []}
+    configured = CONFIG.get("STATE_BLOB", "")
+    blobs = []
+    for blob in raw_blobs:
+        name = blob.get("name", "")
+        if not name.endswith(".tfstate"):
+            continue
+        props = blob.get("properties") or {}
+        blobs.append({
+            "name": name,
+            "size": props.get("contentLength", 0),
+            "lastModified": props.get("lastModified", ""),
+            "isConfigured": bool(configured and name == configured),
+        })
+    return {"ok": True, "configuredBlob": configured, "blobs": blobs}
+
+
+def select_state_blob(payload: dict[str, Any]) -> dict[str, Any]:
+    account = payload.get("accountName", "").strip()
+    container = payload.get("containerName", "").strip()
+    blob = payload.get("blobName", "").strip()
+    if not account or not container or not blob:
+        return {"ok": False, "error": "accountName, containerName, and blobName are required."}
+    save_env_values({
+        "DRIFT_SOURCE": "azure-state",
+        "STATE_STORAGE_ACCOUNT": account,
+        "STATE_CONTAINER": container,
+        "STATE_BLOB": blob,
+    })
+    return {"ok": True, "message": "Terraform state blob selected and saved to .env.", "state": state_config()}
+
+
+def state_config() -> dict[str, str]:
+    return {
+        "source": CONFIG.get("DRIFT_SOURCE", "terraform"),
+        "accountName": CONFIG.get("STATE_STORAGE_ACCOUNT", ""),
+        "containerName": CONFIG.get("STATE_CONTAINER", ""),
+        "blobName": CONFIG.get("STATE_BLOB", ""),
+    }
+
+
+def download_state_blob() -> dict[str, Any]:
+    account = CONFIG.get("STATE_STORAGE_ACCOUNT", "")
+    container = CONFIG.get("STATE_CONTAINER", "")
+    blob = CONFIG.get("STATE_BLOB", "")
+    if not account or not container or not blob:
+        return {"ok": False, "error": "No Azure Storage Terraform state blob is selected."}
+    with tempfile.TemporaryDirectory() as tmp:
+        target = str(pathlib.Path(tmp) / "terraform.tfstate")
+        result = run_command([
+            az_executable(), "storage", "blob", "download",
+            "--account-name", account,
+            "--container-name", container,
+            "--name", blob,
+            "--file", target,
+            "--auth-mode", "login",
+            "--only-show-errors",
+            "--output", "json",
+        ], timeout=180)
+        if not result["ok"]:
+            return {"ok": False, "error": azure_error_message(result)}
+        try:
+            return {"ok": True, "state": json.loads(pathlib.Path(target).read_text(encoding="utf-8"))}
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "error": f"Downloaded blob is not valid Terraform state JSON: {exc}"}
+
+
+def parse_state_resources(state: dict[str, Any]) -> list[dict[str, Any]]:
+    resources = []
+    for resource in state.get("resources", []):
+        mode = resource.get("mode", "managed")
+        if mode != "managed":
+            continue
+        resource_type = resource.get("type", "unknown")
+        name = resource.get("name", "unknown")
+        module = resource.get("module", "")
+        base_address = ".".join([part for part in [module, resource_type, name] if part])
+        for index, instance in enumerate(resource.get("instances", [])):
+            attrs = instance.get("attributes") or {}
+            address = base_address
+            if len(resource.get("instances", [])) > 1:
+                address = f"{base_address}[{index}]"
+            resource_id = attrs.get("id", "")
+            category, severity, recommendation = classify(address, resource_type, [{"path": "state", "desired": "managed", "current": "unknown"}])
+            resources.append({
+                "id": address,
+                "address": address,
+                "name": str(attrs.get("name") or name),
+                "type": resource_type,
+                "category": category,
+                "severity": severity,
+                "owner": attrs.get("tags", {}).get("owner", "unassigned") if isinstance(attrs.get("tags"), dict) else "unassigned",
+                "detectedBy": "Azure Storage Terraform state",
+                "recommendation": recommendation,
+                "summary": "Managed resource loaded from remote Terraform state.",
+                "resourceId": resource_id,
+                "diffs": [
+                    {"path": "terraform_state.address", "desired": address, "current": address},
+                    {"path": "terraform_state.resource_id", "desired": resource_id or "missing", "current": resource_id or "missing"},
+                ],
+            })
+    return resources
+
+
+def state_summary() -> dict[str, Any]:
+    downloaded = download_state_blob()
+    if not downloaded["ok"]:
+        return {"ok": False, "error": downloaded["error"], "state": state_config(), "resources": []}
+    state = downloaded["state"]
+    resources = parse_state_resources(state)
+    return {
+        "ok": True,
+        "state": state_config(),
+        "terraformVersion": state.get("terraform_version", ""),
+        "serial": state.get("serial", ""),
+        "lineage": state.get("lineage", ""),
+        "resources": resources,
+        "resourceCount": len(resources),
+    }
+
+
+def scan_state_file() -> dict[str, Any]:
+    summary = state_summary()
+    if not summary["ok"]:
+        return {"ok": False, "mode": "azure-state", "error": summary["error"], "resources": []}
+    return {
+        "ok": True,
+        "mode": "azure-state",
+        "scannedAt": now_iso(),
+        "resources": summary["resources"],
+        "state": summary["state"],
+        "terraformVersion": summary["terraformVersion"],
+        "serial": summary["serial"],
+    }
 
 
 def terraform_status() -> dict[str, Any]:
@@ -516,10 +730,29 @@ class Handler(BaseHTTPRequestHandler):
                 "terraform": terraform_status(),
                 "azure": azure_status(),
                 "terraformWorkdir": CONFIG.get("TERRAFORM_WORKDIR", ""),
+                "state": state_config(),
             })
             return
         if path == "/api/azure/subscriptions":
             self.send_json(azure_subscriptions())
+            return
+        if path == "/api/azure/storage/accounts":
+            self.send_json(storage_accounts())
+            return
+        if path == "/api/azure/storage/containers":
+            params = urllib.parse.parse_qs(parsed.query)
+            self.send_json(storage_containers(params.get("accountName", [""])[0]))
+            return
+        if path == "/api/azure/storage/blobs":
+            params = urllib.parse.parse_qs(parsed.query)
+            self.send_json(state_blobs(
+                params.get("accountName", [""])[0],
+                params.get("containerName", [""])[0],
+                params.get("prefix", [""])[0],
+            ))
+            return
+        if path == "/api/state/summary":
+            self.send_json(state_summary())
             return
         if path == "/api/scan":
             self.send_json(scan())
@@ -562,6 +795,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/azure/subscription":
             self.send_json(select_subscription(payload.get("subscriptionId", "")))
+            return
+        if parsed.path == "/api/state/select":
+            self.send_json(select_state_blob(payload))
             return
         self.send_error(404)
 

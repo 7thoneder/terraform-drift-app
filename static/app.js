@@ -13,6 +13,11 @@ const nodes = {
   azureDetail: document.getElementById("azureDetail"),
   azureConnectionMessage: document.getElementById("azureConnectionMessage"),
   subscriptionSelect: document.getElementById("subscriptionSelect"),
+  stateMessage: document.getElementById("stateMessage"),
+  storageAccountSelect: document.getElementById("storageAccountSelect"),
+  containerSelect: document.getElementById("containerSelect"),
+  blobPrefix: document.getElementById("blobPrefix"),
+  stateBlobSelect: document.getElementById("stateBlobSelect"),
   driftCount: document.getElementById("driftCount"),
   scanTime: document.getElementById("scanTime"),
   resources: document.getElementById("resources"),
@@ -81,6 +86,12 @@ function renderStatus() {
     const pathHint = status.azure?.path ? ` Found path: ${status.azure.path}` : "";
     nodes.azureDetail.textContent = `${status.azure?.message || "Azure CLI unavailable"}${pathHint}`;
     nodes.azureConnectionMessage.textContent = "Not logged into Azure yet. Start login, complete the browser sign-in, then refresh subscriptions.";
+  }
+  const stateConfig = status.state || {};
+  if (stateConfig.source === "azure-state" && stateConfig.accountName && stateConfig.containerName && stateConfig.blobName) {
+    nodes.stateMessage.textContent = `Using ${stateConfig.accountName}/${stateConfig.containerName}/${stateConfig.blobName} as the Terraform state source.`;
+  } else {
+    nodes.stateMessage.textContent = "Choose a `.tfstate` blob from Azure Storage to load managed resources from remote state.";
   }
 }
 
@@ -252,6 +263,155 @@ async function selectSubscription() {
   }
 }
 
+async function loadStorageAccounts() {
+  const button = document.getElementById("loadStorageAccounts");
+  button.textContent = "Loading...";
+  nodes.storageAccountSelect.innerHTML = '<option value="">Loading accounts...</option>';
+  try {
+    const result = await api("/api/azure/storage/accounts");
+    if (!result.ok) {
+      nodes.storageAccountSelect.innerHTML = '<option value="">Could not load accounts</option>';
+      nodes.stateMessage.textContent = result.error || "Could not load storage accounts.";
+      return;
+    }
+    if (!result.accounts.length) {
+      nodes.storageAccountSelect.innerHTML = '<option value="">No storage accounts found</option>';
+      nodes.stateMessage.textContent = "No storage accounts were found in the selected subscription.";
+      return;
+    }
+    nodes.storageAccountSelect.innerHTML = "";
+    result.accounts.forEach((account) => {
+      const option = document.createElement("option");
+      option.value = account.name;
+      option.dataset.resourceGroup = account.resourceGroup || "";
+      option.textContent = `${account.name} (${account.resourceGroup || "no resource group"})${account.isConfigured ? " - saved" : ""}`;
+      option.selected = account.isConfigured;
+      nodes.storageAccountSelect.appendChild(option);
+    });
+    nodes.stateMessage.textContent = "Choose the storage account that contains your Terraform backend container.";
+  } catch (error) {
+    nodes.storageAccountSelect.innerHTML = '<option value="">Could not load accounts</option>';
+    nodes.stateMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Load accounts";
+  }
+}
+
+async function loadContainers() {
+  const accountName = nodes.storageAccountSelect.value;
+  if (!accountName) {
+    nodes.stateMessage.textContent = "Select a storage account first.";
+    return;
+  }
+  const button = document.getElementById("loadContainers");
+  button.textContent = "Loading...";
+  nodes.containerSelect.innerHTML = '<option value="">Loading containers...</option>';
+  try {
+    const query = new URLSearchParams({ accountName });
+    const result = await api(`/api/azure/storage/containers?${query.toString()}`);
+    if (!result.ok) {
+      nodes.containerSelect.innerHTML = '<option value="">Could not load containers</option>';
+      nodes.stateMessage.textContent = result.error || "Could not load containers.";
+      return;
+    }
+    if (!result.containers.length) {
+      nodes.containerSelect.innerHTML = '<option value="">No containers found</option>';
+      nodes.stateMessage.textContent = "No blob containers were found for this storage account.";
+      return;
+    }
+    nodes.containerSelect.innerHTML = "";
+    result.containers.forEach((container) => {
+      const option = document.createElement("option");
+      option.value = container.name;
+      option.textContent = `${container.name}${container.isConfigured ? " - saved" : ""}`;
+      option.selected = container.isConfigured;
+      nodes.containerSelect.appendChild(option);
+    });
+    nodes.stateMessage.textContent = "Choose the backend container, then find `.tfstate` blobs.";
+  } catch (error) {
+    nodes.containerSelect.innerHTML = '<option value="">Could not load containers</option>';
+    nodes.stateMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Load containers";
+  }
+}
+
+async function loadStateBlobs() {
+  const accountName = nodes.storageAccountSelect.value;
+  const containerName = nodes.containerSelect.value;
+  if (!accountName || !containerName) {
+    nodes.stateMessage.textContent = "Select a storage account and container first.";
+    return;
+  }
+  const button = document.getElementById("loadStateBlobs");
+  button.textContent = "Finding...";
+  nodes.stateBlobSelect.innerHTML = '<option value="">Finding state blobs...</option>';
+  try {
+    const query = new URLSearchParams({ accountName, containerName, prefix: nodes.blobPrefix.value.trim() });
+    const result = await api(`/api/azure/storage/blobs?${query.toString()}`);
+    if (!result.ok) {
+      nodes.stateBlobSelect.innerHTML = '<option value="">Could not load state blobs</option>';
+      nodes.stateMessage.textContent = result.error || "Could not load state blobs.";
+      return;
+    }
+    if (!result.blobs.length) {
+      nodes.stateBlobSelect.innerHTML = '<option value="">No .tfstate blobs found</option>';
+      nodes.stateMessage.textContent = "No `.tfstate` blobs matched that container and prefix.";
+      return;
+    }
+    nodes.stateBlobSelect.innerHTML = "";
+    result.blobs.forEach((blob) => {
+      const option = document.createElement("option");
+      option.value = blob.name;
+      option.textContent = `${blob.name} (${formatBytes(blob.size)})${blob.isConfigured ? " - saved" : ""}`;
+      option.selected = blob.isConfigured;
+      nodes.stateBlobSelect.appendChild(option);
+    });
+    nodes.stateMessage.textContent = "Choose a state blob and save it as the app's resource inventory source.";
+  } catch (error) {
+    nodes.stateBlobSelect.innerHTML = '<option value="">Could not load state blobs</option>';
+    nodes.stateMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Find state blobs";
+  }
+}
+
+async function selectStateBlob() {
+  const accountName = nodes.storageAccountSelect.value;
+  const containerName = nodes.containerSelect.value;
+  const blobName = nodes.stateBlobSelect.value;
+  if (!accountName || !containerName || !blobName) {
+    nodes.stateMessage.textContent = "Select an account, container, and state blob first.";
+    return;
+  }
+  const button = document.getElementById("selectStateBlob");
+  button.textContent = "Saving...";
+  try {
+    const result = await api("/api/state/select", {
+      method: "POST",
+      body: JSON.stringify({ accountName, containerName, blobName }),
+    });
+    if (!result.ok) {
+      nodes.stateMessage.textContent = result.error || "Could not select state blob.";
+      return;
+    }
+    nodes.stateMessage.textContent = result.message;
+    await loadStatus();
+    await scan();
+  } catch (error) {
+    nodes.stateMessage.textContent = error.message;
+  } finally {
+    button.textContent = "Use state blob";
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${Math.round(bytes / 104857.6) / 10} MB`;
+}
+
 async function scan() {
   document.getElementById("scan").textContent = "Scanning...";
   try {
@@ -312,6 +472,10 @@ document.getElementById("refreshStatus").addEventListener("click", loadStatus);
 document.getElementById("loginAzure").addEventListener("click", loginAzure);
 document.getElementById("loadSubscriptions").addEventListener("click", loadSubscriptions);
 document.getElementById("selectSubscription").addEventListener("click", selectSubscription);
+document.getElementById("loadStorageAccounts").addEventListener("click", loadStorageAccounts);
+document.getElementById("loadContainers").addEventListener("click", loadContainers);
+document.getElementById("loadStateBlobs").addEventListener("click", loadStateBlobs);
+document.getElementById("selectStateBlob").addEventListener("click", selectStateBlob);
 document.getElementById("scan").addEventListener("click", scan);
 document.getElementById("generatePlan").addEventListener("click", generatePlan);
 document.getElementById("loadActivity").addEventListener("click", loadActivity);
@@ -321,5 +485,6 @@ nodes.action.addEventListener("change", generatePlan);
 
 loadStatus().then(() => {
   loadSubscriptions();
+  loadStorageAccounts();
   scan();
 });

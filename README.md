@@ -25,11 +25,13 @@ Copy-Item .env.example .env
 Important settings:
 
 - `DRIFT_MODE=live`
+- `DRIFT_SOURCE=terraform` to run Terraform locally, or `DRIFT_SOURCE=azure-state` to load resources from a remote state blob
 - `TERRAFORM_WORKDIR=C:\path\to\your\terraform\repo\environment`
 - `AZURE_SUBSCRIPTION_ID=<subscription-id>`
 - `TERRAFORM_WORKSPACE=<workspace-name>` if you use workspaces
 - `AZ_CLI_PATH=C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd` if the app cannot find Azure CLI
 - `TERRAFORM_CLI_PATH=C:\path\to\terraform.exe` if Terraform is not on `PATH`
+- `STATE_STORAGE_ACCOUNT`, `STATE_CONTAINER`, and `STATE_BLOB` if you want to preselect Azure Storage remote state
 
 You can also set the subscription from the app:
 
@@ -40,6 +42,22 @@ You can also set the subscription from the app:
 5. Choose a subscription and click `Use subscription`.
 
 The app saves the selected subscription to `.env`, runs `az account set --subscription <id>`, and passes the selected ID to Terraform as `ARM_SUBSCRIPTION_ID`.
+
+## Use Azure Storage remote state
+
+After choosing a subscription:
+
+1. Click `Load accounts`.
+2. Pick the storage account that holds your Terraform backend.
+3. Click `Load containers`.
+4. Pick the backend container.
+5. Optionally enter a blob prefix.
+6. Click `Find state blobs`.
+7. Pick the `.tfstate` blob and click `Use state blob`.
+
+The app saves `DRIFT_SOURCE=azure-state`, `STATE_STORAGE_ACCOUNT`, `STATE_CONTAINER`, and `STATE_BLOB` to `.env`. A scan then downloads the selected state blob with Azure CLI login auth and parses managed resources from it.
+
+Required Azure access for this path is usually subscription `Reader` plus Storage Blob Data Reader on the state storage account or container.
 
 On Windows, Azure CLI is often installed at:
 

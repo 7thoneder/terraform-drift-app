@@ -60,6 +60,41 @@
         </div>
       </section>
 
+      <section class="state-panel" aria-label="Terraform state selection">
+        <div>
+          <h2>Remote Terraform state</h2>
+          <p id="stateMessage">Choose a `.tfstate` blob from Azure Storage to load managed resources from remote state.</p>
+        </div>
+        <div class="state-controls">
+          <label>
+            Storage account
+            <select id="storageAccountSelect">
+              <option value="">No accounts loaded</option>
+            </select>
+          </label>
+          <label>
+            Container
+            <select id="containerSelect">
+              <option value="">No containers loaded</option>
+            </select>
+          </label>
+          <label>
+            Prefix
+            <input id="blobPrefix" type="text" placeholder="optional/folder/prefix">
+          </label>
+          <label>
+            State blob
+            <select id="stateBlobSelect">
+              <option value="">No state blobs loaded</option>
+            </select>
+          </label>
+          <button id="loadStorageAccounts" type="button" class="button secondary">Load accounts</button>
+          <button id="loadContainers" type="button" class="button secondary">Load containers</button>
+          <button id="loadStateBlobs" type="button" class="button secondary">Find state blobs</button>
+          <button id="selectStateBlob" type="button" class="button primary">Use state blob</button>
+        </div>
+      </section>
+
       <section class="toolbar" aria-label="Resource filters">
         <label>
           Search
